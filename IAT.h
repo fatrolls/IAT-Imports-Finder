@@ -50,7 +50,7 @@ BOOL SnapShotModules(DWORD dwPID)
 
 	if (!hSelf)
 	{
-		//printf("Invalid Process Handle\n");
+		//myprintf("Invalid Process Handle\n");
 		return FALSE;
 	}
 	
@@ -92,18 +92,17 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 {
 	//try to load the dll into our space
 	HMODULE hDll = NULL;
-	if(iat_module_info)
+	if (iat_module_info)
+		hDll = GetModuleHandle(iat_module_info->DllName);
+	if(!hDll)
 		hDll = LoadLibrary(iat_module_info->DllFileName);
-
-	if (NULL == hDll)
+	if (!hDll)
 		return;
-
 	//now ask for info from Export
 	PIMAGE_DOS_HEADER pDOSHDR = (PIMAGE_DOS_HEADER)hDll;
 	PIMAGE_NT_HEADERS pNTHDR = (PIMAGE_NT_HEADERS)((BYTE *)pDOSHDR + pDOSHDR->e_lfanew);
 	if (pNTHDR->OptionalHeader.NumberOfRvaAndSizes < IMAGE_DIRECTORY_ENTRY_EXPORT + 1)
 		return;
-
 	PIMAGE_EXPORT_DIRECTORY pExpDIR = (PIMAGE_EXPORT_DIRECTORY)
 		((BYTE *)pDOSHDR
 			+ pNTHDR->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
@@ -131,13 +130,14 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 	DWORD j = 0;
 	char *pszName = NULL;
 	SIZE_T nLen = 0;
+	//myprintf("hhhhh\n");
 	for (j = 0; j < dwNames; j++)
 	{
 		if (pNameOrd[j] == i)
 		{
 			pszName = (char *)pDOSHDR + pNames[j];
 			nLen = strlen(pszName);
-			/*printf("%X\t%04X\t%s\n",
+			/*myprintf("%X\t%04X\t%s\n",
 				*(DWORD *)ptrAPI,
 				j,
 				pszName
@@ -151,9 +151,9 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 			listOfIATImports.push_back(iat_found);
 			/*
 			if(ptrAPIObfuscated)
-				printf("Added Obfuscated %X %X, %s -> %s\n", ptrAPI, ptrAPIObfuscated, iat_module_info->DllName, pszName);
+				myprintf("Added Obfuscated %X %X, %s -> %s\n", ptrAPI, ptrAPIObfuscated, iat_module_info->DllName, pszName);
 			else
-				printf("Added %X %X, %s -> %s\n", ptrAPI, *(DWORD*)ptrAPI, iat_module_info->DllName, pszName);
+				myprintf("Added %X %X, %s -> %s\n", ptrAPI, *(DWORD*)ptrAPI, iat_module_info->DllName, pszName);
 			*/
 		}
 	}
@@ -169,7 +169,7 @@ dwImageSize is the exe's image size                                             
 void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 {
 	if (gs_ModuleList.size() == 0) {
-		//printf("No Modules loaded, can't fix anything\n");
+		//myprintf("No Modules loaded, can't fix anything\n");
 		return;
 	}
 
@@ -177,17 +177,22 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 	//we need to snapshot the process.
 	std::list<IAT_Module_Info>::iterator it;
 	IAT_Module_Info iat_module_info;
-	//printf("ptrIAT = %X ptrIATEnd = %X\n", ptrIAT, ptrIATEnd);
+	//myprintf("ptrIAT = %X ptrIATEnd = %X\n", ptrIAT, ptrIATEnd);
 
 	DWORD ptrIndex = ptrIAT;
 	DWORD dwModBase = NULL;  //利用局部性原理，减少比较
 	DWORD dwModSize = NULL;
 	DWORD dwModHit = NULL;
+
+	DWORD test = 0;
+
 	while (TRUE)
 	{
 		//thz should always continue, even if BadPtr or invalid funcptr
+		//myprintf("ptrIndex = %X\n", ptrIndex);
 		if (ptrIndex <= ptrIATEnd
-			&& IsBadReadPtr((const void *)*(DWORD *)ptrIndex, sizeof(DWORD)))
+			&& (IsBadReadPtr((const void *)ptrIndex, sizeof(DWORD))
+			|| IsBadReadPtr((const void *)*(DWORD *)ptrIndex, sizeof(DWORD))))
 		{
 			ptrIndex += sizeof(DWORD);
 			continue;
@@ -195,14 +200,15 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 
 		//now we may end, be careful
 		if (ptrIndex > ptrIATEnd
-			&& (NULL == *(DWORD*)ptrIndex)
-			&& (NULL == *(DWORD*)(ptrIndex + sizeof(DWORD))))
+			&& (IsBadReadPtr((const void *)ptrIndex, sizeof(DWORD)) || *(DWORD*)ptrIndex == NULL)
+			&& (IsBadReadPtr((const void *)(ptrIndex + sizeof(DWORD)), sizeof(DWORD)) || *(DWORD*)(ptrIndex + sizeof(DWORD)) == NULL))
 		{
 			break;
 		}
 
 		if (ptrIndex > ptrIATEnd
-			&& IsBadReadPtr((const void *)*(DWORD *)ptrIndex, sizeof(DWORD))
+			&& (IsBadReadPtr((const void *)ptrIndex, sizeof(DWORD))
+			|| IsBadReadPtr((const void *)*(DWORD *)ptrIndex, sizeof(DWORD)))
 			)
 		{
 			ptrIndex += sizeof(DWORD);
@@ -232,8 +238,8 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 				if (*(DWORD *)ptrIndex >= dwModBase
 					&& *(DWORD *)ptrIndex < dwModBase + dwModSize)
 				{
-					//printf("ptrIndex %X %X, Mod: %X, Size: %X\n", *(DWORD *)ptrIndex, ptrIndex, dwModBase, dwModSize);
-					//printf("Module: %s\n", iat_module_info.DllName);
+					//myprintf("ptrIndex %X %X, Mod: %X, Size: %X\n", *(DWORD *)ptrIndex, ptrIndex, dwModBase, dwModSize);
+					//myprintf("Module: %s\n", iat_module_info.DllName);
 					break;
 				}
 				memset(&iat_module_info, 0, sizeof(IAT_Module_Info));
@@ -242,12 +248,13 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 
 		if (iat_module_info.ImageBase == 0 && iat_module_info.ImageSize == 0) {
 			bool passDone = false;
+			bool ptrIndexInc = false;
 			bool Found = false;
 			IAT_Module_Info iat_module_info_temp;
 
 			DWORD deObfuscatedAddress = *(DWORD*)ptrIndex;
 			retryPass:
-			//printf("Check = %X %X %X\n", deObfuscatedAddress, (BYTE)deObfuscatedAddress, *(BYTE*)deObfuscatedAddress);
+			//myprintf("Check = %X %X %X\n", deObfuscatedAddress, (BYTE)deObfuscatedAddress, *(BYTE*)deObfuscatedAddress);
 
 			for (it = gs_ModuleList.begin(); it != gs_ModuleList.end(); it++)
 			{
@@ -258,47 +265,57 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 				if (deObfuscatedAddress >= dwModBase
 					&& deObfuscatedAddress < dwModBase + dwModSize)
 				{
-					//printf("ptrIndex %X %X, Mod: %X, Size: %X\n", deObfuscatedAddress, ptrIndex, dwModBase, dwModSize);
-					//printf("Module: %s\n", iat_module_info.DllName);
+					//myprintf("ptrIndex %X %X, Mod: %X, Size: %X\n", deObfuscatedAddress, ptrIndex, dwModBase, dwModSize);
+					//myprintf("Module: %s\n", iat_module_info.DllName);
 					Found = true;
 					break;
 				}
 			}
+
 			if (Found) {
-				//printf("Found Check = %X\n", deObfuscatedAddress);
+				//myprintf("Found Check = %X\n", deObfuscatedAddress);
 				GetAPIInfo(ptrIndex, &iat_module_info_temp, deObfuscatedAddress);
 				ptrIndex += sizeof(DWORD);
 				continue;
 			} else if (!passDone) {
 				passDone = true;
-				if (*(BYTE*)deObfuscatedAddress == 0xE9) //JMP relative
+				if (!IsBadReadPtr((const void *)deObfuscatedAddress, sizeof(DWORD)) && *(BYTE*)deObfuscatedAddress == 0xE9) //JMP relative
 					deObfuscatedAddress = (*(DWORD*)(deObfuscatedAddress + 1)) + deObfuscatedAddress + 5;
-				else if (*(BYTE*)deObfuscatedAddress == 0x68 && *(BYTE*)(deObfuscatedAddress + 5) == 0xC3) { //PUSH
-					//printf("PUSH = %X %X +5[%X]\n", deObfuscatedAddress, *(DWORD*)(deObfuscatedAddress + 1), *(BYTE*)(deObfuscatedAddress + 5));
+				else if (!IsBadReadPtr((const void *)deObfuscatedAddress, sizeof(DWORD)) && *(BYTE*)deObfuscatedAddress == 0x68 && *(BYTE*)(deObfuscatedAddress + 5) == 0xC3) { //PUSH
+					//myprintf("PUSH = %X %X +5[%X]\n", deObfuscatedAddress, *(DWORD*)(deObfuscatedAddress + 1), *(BYTE*)(deObfuscatedAddress + 5));
 					deObfuscatedAddress = *(DWORD*)(deObfuscatedAddress + 1);
-				} else if (*(BYTE*)deObfuscatedAddress == 0xA1 && *(BYTE*)(deObfuscatedAddress + 5) == 0xC3) { //A1 MOV EAX, [XXXXXX]
-					//printf("A1 = %X %X +5[%X]\n", deObfuscatedAddress, *(DWORD*)(deObfuscatedAddress + 1), *(BYTE*)(deObfuscatedAddress + 5));
+				} else if (!IsBadReadPtr((const void *)deObfuscatedAddress, sizeof(DWORD)) && *(BYTE*)deObfuscatedAddress == 0xA1 && *(BYTE*)(deObfuscatedAddress + 5) == 0xC3) { //A1 MOV EAX, [XXXXXX]
+					//myprintf("A1 = %X %X +5[%X]\n", deObfuscatedAddress, *(DWORD*)(deObfuscatedAddress + 1), *(BYTE*)(deObfuscatedAddress + 5));
 					deObfuscatedAddress = *(DWORD*)(deObfuscatedAddress + 1);
-				} else if (*(BYTE*)deObfuscatedAddress == 0xFF && *(BYTE*)(deObfuscatedAddress + 1) == 0x35 && *(BYTE*)(deObfuscatedAddress + 6) == 0x58) { //push [XXXXXX]
-					//printf("PUSH2 = %X %X\n", deObfuscatedAddress, *(DWORD*)(deObfuscatedAddress + 2));
+				} else if (!IsBadReadPtr((const void *)deObfuscatedAddress, sizeof(DWORD)) && *(BYTE*)deObfuscatedAddress == 0xFF && *(BYTE*)(deObfuscatedAddress + 1) == 0x35 && *(BYTE*)(deObfuscatedAddress + 6) == 0x58) { //push [XXXXXX]
+					//myprintf("PUSH2 = %X %X\n", deObfuscatedAddress, *(DWORD*)(deObfuscatedAddress + 2));
 					deObfuscatedAddress = *(DWORD*)(deObfuscatedAddress + 2);
-				} else if ((BYTE)deObfuscatedAddress == 0xC8) { //enter (invalid opcode)
-					//printf("invalid 0xC8 = %X %X %X\n", ptrIndex, deObfuscatedAddress, (DWORD*)deObfuscatedAddress);
-					deObfuscatedAddress = *(DWORD*)(ptrIndex + insn_len((void*)ptrIndex));
-					//printf("invalid 0xC8 = %X %X %X\n", ptrIndex, deObfuscatedAddress, (DWORD*)deObfuscatedAddress);
-					passDone = false;
+				} else if (!ptrIndexInc && (BYTE)deObfuscatedAddress == 0xC8) { //enter (invalid opcode)
+					//myprintf("invalid 0xC8 = %X %X %X\n", ptrIndex, deObfuscatedAddress, (DWORD*)deObfuscatedAddress);
+					if (!IsBadReadPtr((const void *)ptrIndex, sizeof(DWORD))) {
+						int inc = insn_len((void*)ptrIndex);
+						deObfuscatedAddress += *(DWORD*)(ptrIndex + insn_len((void*)ptrIndex));
+						ptrIndexInc = true;
+						//myprintf("invalid 0xC8 = %X %X %X\n", ptrIndex, deObfuscatedAddress, (DWORD*)deObfuscatedAddress);
+						if (inc > 0)
+							passDone = false;
+					} else {
+						ptrIndex += sizeof(DWORD);
+						continue;
+					}
 				}
+
 				goto retryPass;
-			} else {
-				//printf("not found import :(\n");
-				ptrIndex += sizeof(DWORD);
-				continue;
 			}
+
+			//myprintf("not found import :(\n");
+			ptrIndex += sizeof(DWORD);
+			continue;
 		}
 
 		//now *ptrIndex in dwModBase
 		//now retrieve API info (Hint, name) from the module's export
-		//printf("ptrIndex %X %X, Mod: %X, Size: %X\n", *(DWORD *)ptrIndex, ptrIndex, dwModBase, dwModSize);
+		//myprintf("ptrIndex %X %X, Mod: %X, Size: %X\n", *(DWORD *)ptrIndex, ptrIndex, dwModBase, dwModSize);
 		GetAPIInfo(ptrIndex, &iat_module_info);
 		ptrIndex += sizeof(DWORD);
 	}
@@ -401,7 +418,7 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 	if (!pImageSectionStart)
 		pImageSectionStart = dwImageSize;
 
-	//printf("Found OEP at %X, ImageSize = %X,%X\n", dwOEP, dwImageSize, pImageSectionStart);
+	//myprintf("Found OEP at %X, ImageSize = %X,%X\n", dwOEP, dwImageSize, pImageSectionStart);
 
 	//search for FF 25 XXXX, FF 15 YYYY from OEP, had better use Disasm engine 
 	//but we just do it simply
@@ -434,7 +451,7 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 
 		if ((DWORD)ptrFuncAddr > ptrFuncAddrHighest) {
 			ptrFuncAddrHighest = (DWORD)ptrFuncAddr;
-			//printf("highest = %X\n", ptrFuncAddrHighest);
+			//myprintf("highest = %X\n", ptrFuncAddrHighest);
 		}
 
 		//recheck illegal, 
@@ -533,15 +550,12 @@ unsigned long Get_Import_Address(char* DLL, char* Library, char* Import, int ord
 					}
 				}
 
-				unsigned long ptrFuncsIndex = (unsigned long)ImportDescriptor[Index].FirstThunk + (DWORD)mhLoadedDLL;
-				DWORD impAddress = (DWORD)GetProcAddress(GetModuleHandle(Library), Import);
-
 				//First get all modules loaded, so you can find the maximum ImageBase+ImageSize for IAT Max Size calculation.
 				if (gs_ModuleList.size() == 0) {
 					BOOL bRet = SnapShotModules((DWORD)GetCurrentProcess());
 					if (!bRet)
 					{
-						//printf("Failed to get Modules\n");
+						//myprintf("Failed to get Modules\n");
 						return 0;
 					}
 				}
@@ -555,45 +569,42 @@ unsigned long Get_Import_Address(char* DLL, char* Library, char* Import, int ord
 					if (max_it->ImageBase > 0)
 						dwMaxIATImageSize = (DWORD)max_it->ImageBase + max_it->ImageSize;
 
-					//printf("Highest Imported DLL = %X %s\n", max_it->ImageBase, max_it->DllName);
+					//myprintf("Highest Imported DLL = %X %s\n", max_it->ImageBase, max_it->DllName);
 				}
 				//now we do more, retrieve the Page where IAT in
 				DWORD ptrIATEnd = NULL;
 				DWORD ptrIAT = SearchIAT(mhLoadedDLL, ModuleSize, NtHeader->OptionalHeader.ImageBase, dwMaxIATImageSize, &ptrIATEnd);
 
-				//printf("Rebuilding IAT,Found IAT in page %X, IAT End %X\n", ptrIAT, ptrIATEnd);
-				if(listOfIATImports.size() == 0)
+				//myprintf("Rebuilding IAT,Found IAT in page %X, IAT End %X\n", ptrIAT, ptrIATEnd);
+				if (listOfIATImports.size() == 0)
 					FixImport((DWORD)GetCurrentProcess(), ptrIAT, ptrIATEnd, ModuleSize);
 
 				if (listOfIATImports.size() > 0) {
-					auto match = std::find_if(listOfIATImports.cbegin(), listOfIATImports.cend(), [Library, Import](const IAT_Import_Information& s) {
-						return _strcmpi(s.IATModuleName, Library) == 0 && _strcmpi(s.IATFunctionName, Import) == 0;
-					});
-
-					if (match != listOfIATImports.cend()) {
-						printf("Found IAT = %X, %s %s\n", match->IATAddress, match->IATModuleName, match->IATFunctionName);
-					        return match->IATAddress;
-					}
-					
-                                        /*
 					std::list<IAT_Import_Information>::iterator i;
 					for (i = listOfIATImports.begin();
 						i != listOfIATImports.end();
 						i++)
 					{
-						printf("Module: %s Import: %s Address: %X\n", i->IATModuleName, i->IATFunctionName, i->IATAddress);
-					}*/
-
+						myprintf("Module: %s Import: %s Address: %X\n", i->IATModuleName, i->IATFunctionName, i->IATAddress);
+					}
+					
+					
+					auto match = std::find_if(listOfIATImports.cbegin(), listOfIATImports.cend(), [Library, Import](const IAT_Import_Information& s) {
+						return _strcmpi(s.IATModuleName, Library) == 0 && _strcmpi(s.IATFunctionName, Import) == 0;
+					});
+					if (match != listOfIATImports.cend()) {
+						//myprintf("Found IAT = %X, %s %s\n", match->IATAddress, match->IATModuleName, match->IATFunctionName);
+						return match->IATAddress;
+					}
 				} else {
-					//printf("Couldn't find module %s, import %s\n", Library, Import);
+					//myprintf("Couldn't find module %s, import %s\n", Library, Import);
 					return 0;
 				}
-
 			}
 		}
 	}
 	__except (1) {
-		printf("Exception hit parsing imports\n");
+		myprintf(XorStr("Exception hit parsing imports\n"));
 	}
 	return 0;
 }
