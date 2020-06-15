@@ -177,7 +177,7 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 	//we need to snapshot the process.
 	std::list<IAT_Module_Info>::iterator it;
 	IAT_Module_Info iat_module_info;
-	printf("ptrIAT = %X ptrIATEnd = %X\n", ptrIAT, ptrIATEnd);
+	//printf("ptrIAT = %X ptrIATEnd = %X\n", ptrIAT, ptrIATEnd);
 
 	DWORD ptrIndex = ptrIAT;
 	DWORD dwModBase = NULL;  //利用局部性原理，减少比较
