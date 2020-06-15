@@ -169,7 +169,7 @@ dwImageSize is the exe's image size                                             
 void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 {
 	if (gs_ModuleList.size() == 0) {
-		printf("No Modules loaded, can't fix anything\n");
+		//printf("No Modules loaded, can't fix anything\n");
 		return;
 	}
 
