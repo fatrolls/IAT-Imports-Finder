@@ -471,6 +471,9 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 		//now found one item that may belongs to IAT
 		ptrFuncAddr = (DWORD *)*ptrFuncAddr;
 
+		if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
+			break;
+		
 		if ((DWORD)ptrFuncAddr > ptrFuncAddrHighest) {
 			ptrFuncAddrHighest = (DWORD)ptrFuncAddr;
 			//printf("highest = %X\n", ptrFuncAddrHighest);
@@ -480,7 +483,7 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 		//for system dlls, what about user dlls? well, whatever, there must be system dlls
 		//what if we found IAT for system dlls, so we found the user dlls.
 		//What if the IAT tables are not continous????????
-		if (*ptrFuncAddr < dwMaxIATImageSize)
+		if ((IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD))) || *ptrFuncAddr < dwMaxIATImageSize)
 		{
 			instruction_length = insn_len(pCode);
 			pCode += instruction_length;
