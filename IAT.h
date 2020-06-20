@@ -466,6 +466,9 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 			continue;
 		}
 
+		if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
+			break;
+		
 		//need to fix relocation
 		*(DWORD *)ptrFuncAddr = (long)lpAddr + *(long *)ptrFuncAddr - (long)pImageBase;
 		//now found one item that may belongs to IAT
