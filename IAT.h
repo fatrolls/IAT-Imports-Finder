@@ -2,6 +2,7 @@
 #include <tlhelp32.h> //MODULEENTRY32 IAT
 #include <shlwapi.h> //PathFindFileName IAT
 #include <DbgHelp.h> //detours, GetImports, PE information BaseAddressStart/End etc.
+#include <string> //for unordered_map IAT_TO_IMPORT
 #include <unordered_set> //std::unordered_set<DWORD>
 #include <unordered_map> //std::map
 #include <string>
@@ -33,6 +34,7 @@ struct IAT_Import_Information
 
 static std::list<IAT_Import_Information> listOfIATImports;
 
+std::unordered_map<std::string, BOOL> IAT_TO_IMPORT;
 
 BOOL SnapShotModules(DWORD dwPID)
 {
@@ -86,9 +88,11 @@ BOOL SnapShotModules(DWORD dwPID)
 /************************************************************************/
 /*
 Function : Retrieve API info by its addr and the module it belongs to
-Params   : pBuf points to the image mapped to our space*/
+Params   : pBuf points to the image mapped to our space
+Returns: found all or not.
+*/
 /************************************************************************/
-void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrAPIObfuscated = NULL)
+BOOL GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrAPIObfuscated = NULL)
 {
 	//try to load the dll into our space
 	HMODULE hDll = NULL;
@@ -97,12 +101,12 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 	if(!hDll)
 		hDll = LoadLibrary(iat_module_info->DllFileName);
 	if (!hDll)
-		return;
+		return FALSE;
 	//now ask for info from Export
 	PIMAGE_DOS_HEADER pDOSHDR = (PIMAGE_DOS_HEADER)hDll;
 	PIMAGE_NT_HEADERS pNTHDR = (PIMAGE_NT_HEADERS)((BYTE *)pDOSHDR + pDOSHDR->e_lfanew);
 	if (pNTHDR->OptionalHeader.NumberOfRvaAndSizes < IMAGE_DIRECTORY_ENTRY_EXPORT + 1)
-		return;
+		return FALSE;
 	PIMAGE_EXPORT_DIRECTORY pExpDIR = (PIMAGE_EXPORT_DIRECTORY)
 		((BYTE *)pDOSHDR
 			+ pNTHDR->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
@@ -121,7 +125,7 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 
 	//not match
 	if (i == dwFunctions)
-		return;
+		return FALSE;
 
 	//get name and ordinal
 	DWORD dwNames = pExpDIR->NumberOfNames;
@@ -130,7 +134,7 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 	DWORD j = 0;
 	char *pszName = NULL;
 	SIZE_T nLen = 0;
-	
+	//printf("hhhhh\n");
 	for (j = 0; j < dwNames; j++)
 	{
 		if (pNameOrd[j] == i)
@@ -149,6 +153,17 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 			strcpy(iat_found.IATFunctionName, pszName);
 			strcpy(iat_found.IATModuleName, iat_module_info->DllName);
 			listOfIATImports.push_back(iat_found);
+
+			//lazy quickfix lol.
+			IAT_TO_IMPORT[pszName] = TRUE;
+
+			//Still has IAT IMPORTS it didn't finish finding.
+			if (IAT_TO_IMPORT.end() != find_if(IAT_TO_IMPORT.begin(), IAT_TO_IMPORT.end(), [](const std::unordered_map<std::string, BOOL>::value_type& iatIsFound)
+			{ return iatIsFound.second == FALSE; }))
+				return FALSE; //still has a some unfound IAT Imports, keep searching.
+			else
+				return TRUE; //found all can quit searching now.
+
 			/*
 			if(ptrAPIObfuscated)
 				printf("Added Obfuscated %X %X, %s -> %s\n", ptrAPI, ptrAPIObfuscated, iat_module_info->DllName, pszName);
@@ -157,6 +172,7 @@ void GetAPIInfo(DWORD ptrAPI, const IAT_Module_Info *iat_module_info, DWORD ptrA
 			*/
 		}
 	}
+	return FALSE;
 }
 
 /************************************************************************/
@@ -180,7 +196,7 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 	//printf("ptrIAT = %X ptrIATEnd = %X\n", ptrIAT, ptrIATEnd);
 
 	DWORD ptrIndex = ptrIAT;
-	DWORD dwModBase = NULL;  //利用局部性原理，减少比较
+	DWORD dwModBase = NULL;  //????????????
 	DWORD dwModSize = NULL;
 	DWORD dwModHit = NULL;
 
@@ -219,7 +235,7 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 		//whether in a module range
 		dwModHit = NULL;
 
-		//局部性原理，减少遍历
+		//??????????
 		if (*(DWORD *)ptrIndex >= dwModBase
 			&& *(DWORD *)ptrIndex < dwModBase + dwModSize)
 		{
@@ -274,7 +290,7 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 
 			if (Found) {
 				//printf("Found Check = %X\n", deObfuscatedAddress);
-				GetAPIInfo(ptrIndex, &iat_module_info_temp, deObfuscatedAddress);
+				if (GetAPIInfo(ptrIndex, &iat_module_info_temp, deObfuscatedAddress)) break;
 				ptrIndex += sizeof(DWORD);
 				continue;
 			} else if (!passDone) {
@@ -316,7 +332,7 @@ void FixImport(DWORD dwPID, DWORD ptrIAT, DWORD ptrIATEnd, DWORD dwImageSize)
 		//now *ptrIndex in dwModBase
 		//now retrieve API info (Hint, name) from the module's export
 		//printf("ptrIndex %X %X, Mod: %X, Size: %X\n", *(DWORD *)ptrIndex, ptrIndex, dwModBase, dwModSize);
-		GetAPIInfo(ptrIndex, &iat_module_info);
+		if (GetAPIInfo(ptrIndex, &iat_module_info)) break;
 		ptrIndex += sizeof(DWORD);
 	}
 }
@@ -418,7 +434,7 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 	if (!pImageSectionStart)
 		pImageSectionStart = dwImageSize;
 
-	//printf("Found OEP at %X, ImageSize = %X,%X\n", dwOEP, dwImageSize, pImageSectionStart);
+	//printf("Found OEP at %X, ImageBase = %X\nImageSize = %X ImageSectionStart = %X\n", dwOEP, pImageBase, dwImageSize, pImageSectionStart);
 
 	//search for FF 25 XXXX, FF 15 YYYY from OEP, had better use Disasm engine 
 	//but we just do it simply
@@ -436,7 +452,13 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 
 		//check illegal, *ptrFuncAddr > pImageBase  && *ptrFuncAddr <= pImageBase + dwImageSize
 		ptrFuncAddr = (DWORD *)(pCode + sizeof(WORD));
-		if (*ptrFuncAddr < (DWORD)pImageBase || *ptrFuncAddr >= (DWORD)pImageBase + dwImageSize)
+
+		//Exit bad area.
+		if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
+			break;
+
+		if ((IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
+			|| *ptrFuncAddr < (DWORD)pImageBase || *ptrFuncAddr >= (DWORD)pImageBase + dwImageSize)
 		{
 			instruction_length = insn_len(pCode);
 			pCode += instruction_length;
@@ -472,9 +494,12 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 	//make ptrFuncAddr point to the beginning of the page
 	//we use 0xFFFEFFFF, because ptrFuncAddr is the memory addr we allocated, not by loadlibrary
 	*ptrIATEnd = (DWORD)ptrFuncAddrHighest;
-	ptrFuncAddr = (DWORD*)(((DWORD)ptrFuncAddr & 0xFFFFF000)
-		+ ((DWORD)lpAddr & 0x0FFF)
-		);
+	ptrFuncAddr = (DWORD*)(((DWORD)ptrFuncAddr & 0xFFFFF000) + ((DWORD)lpAddr & 0x0FFF));
+
+	//quick fix.
+	if ((DWORD)ptrFuncAddr > pImageSectionStart)
+		return pImageSectionStart;
+
 	return (DWORD)ptrFuncAddr;
 
 	//return NULL;
@@ -571,6 +596,7 @@ unsigned long Get_Import_Address(char* DLL, char* Library, char* Import, int ord
 
 					//printf("Highest Imported DLL = %X %s\n", max_it->ImageBase, max_it->DllName);
 				}
+
 				//now we do more, retrieve the Page where IAT in
 				DWORD ptrIATEnd = NULL;
 				DWORD ptrIAT = SearchIAT(mhLoadedDLL, ModuleSize, NtHeader->OptionalHeader.ImageBase, dwMaxIATImageSize, &ptrIATEnd);
@@ -580,21 +606,20 @@ unsigned long Get_Import_Address(char* DLL, char* Library, char* Import, int ord
 					FixImport((DWORD)GetCurrentProcess(), ptrIAT, ptrIATEnd, ModuleSize);
 
 				if (listOfIATImports.size() > 0) {
-					std::list<IAT_Import_Information>::iterator i;
-					for (i = listOfIATImports.begin();
-						i != listOfIATImports.end();
-						i++)
-					{
-						printf("Module: %s Import: %s Address: %X\n", i->IATModuleName, i->IATFunctionName, i->IATAddress);
-					}
-					
-					
 					auto match = std::find_if(listOfIATImports.cbegin(), listOfIATImports.cend(), [Library, Import](const IAT_Import_Information& s) {
 						return _strcmpi(s.IATModuleName, Library) == 0 && _strcmpi(s.IATFunctionName, Import) == 0;
 					});
 					if (match != listOfIATImports.cend()) {
 						//printf("Found IAT = %X, %s %s\n", match->IATAddress, match->IATModuleName, match->IATFunctionName);
 						return match->IATAddress;
+					}
+
+					std::list<IAT_Import_Information>::iterator i;
+					for (i = listOfIATImports.begin();
+						i != listOfIATImports.end();
+						i++)
+					{
+						printf("Module: %s Import: %s Address: %X\n", i->IATModuleName, i->IATFunctionName, i->IATAddress);
 					}
 				} else {
 					//printf("Couldn't find module %s, import %s\n", Library, Import);
@@ -604,7 +629,7 @@ unsigned long Get_Import_Address(char* DLL, char* Library, char* Import, int ord
 		}
 	}
 	__except (1) {
-	    printf("Exception hit parsing imports\n");
+		printf(XorStr("Exception hit parsing imports\n"));
 	}
 	return 0;
 }
