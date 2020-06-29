@@ -401,106 +401,107 @@ DWORD SearchIAT(LPVOID lpAddr, DWORD dwImageSize, DWORD pImageBase, DWORD dwMaxI
 	WORD  wJMP = 0x25FF;
 	WORD  wCALL = 0x15FF;
 
-	dwOEP = GetOEP(lpAddr);
-	i = dwOEP;
-	pCode = (BYTE *)((BYTE *)lpAddr + dwOEP);
+	__try {
+		dwOEP = GetOEP(lpAddr);
+		i = dwOEP;
+		pCode = (BYTE *)((BYTE *)lpAddr + dwOEP);
 
-	// get the location of the module's IMAGE_NT_HEADERS structure
-	IMAGE_NT_HEADERS *pNtHdr = ImageNtHeader(lpAddr);
-	// section table immediately follows the IMAGE_NT_HEADERS
-	IMAGE_SECTION_HEADER *pSectionHdr = (IMAGE_SECTION_HEADER *)(pNtHdr + 1);
+		// get the location of the module's IMAGE_NT_HEADERS structure
+		IMAGE_NT_HEADERS *pNtHdr = ImageNtHeader(lpAddr);
+		// section table immediately follows the IMAGE_NT_HEADERS
+		IMAGE_SECTION_HEADER *pSectionHdr = (IMAGE_SECTION_HEADER *)(pNtHdr + 1);
 
-	bool got = false;
-	for (int scn = 0; scn < pNtHdr->FileHeader.NumberOfSections; ++scn)
-	{
-		char *name = (char*)pSectionHdr->Name;
-		DWORD SectionStart = (DWORD)lpAddr + pSectionHdr->VirtualAddress;
-		DWORD SectionEnd = (DWORD)lpAddr + pSectionHdr->VirtualAddress + pSectionHdr->Misc.VirtualSize - 1;
+		bool got = false;
+		for (int scn = 0; scn < pNtHdr->FileHeader.NumberOfSections; ++scn)
+		{
+			char *name = (char*)pSectionHdr->Name;
+			DWORD SectionStart = (DWORD)lpAddr + pSectionHdr->VirtualAddress;
+			DWORD SectionEnd = (DWORD)lpAddr + pSectionHdr->VirtualAddress + pSectionHdr->Misc.VirtualSize - 1;
 
-		if (got) {
-			pImageSectionStart = SectionStart;
-			break;
-		}
+			if (got) {
+				pImageSectionStart = SectionStart;
+				break;
+			}
 
-		if (SectionStart == pImageBase + dwOEP && SectionEnd < dwImageSize) {
-			got = true;
-			//next one is imports.
+			if (SectionStart == pImageBase + dwOEP && SectionEnd < dwImageSize) {
+				got = true;
+				//next one is imports.
+				++pSectionHdr;
+				continue;
+			}
 			++pSectionHdr;
-			continue;
 		}
-		++pSectionHdr;
+
+		if (!pImageSectionStart)
+			pImageSectionStart = dwImageSize;
+
+		//myprintf("Found OEP at %X, ImageBase = %X\nImageSize = %X ImageSectionStart = %X\n", dwOEP, pImageBase, dwImageSize, pImageSectionStart);
+
+		//search for FF 25 XXXX, FF 15 YYYY from OEP, had better use Disasm engine but we just do it simply
+		while (i < pImageSectionStart)
+		{
+			if (!IsBadReadPtr((const void *)pCode, sizeof(WORD)) &&
+				(memcmp(pCode, &wJMP, sizeof(WORD)) && memcmp(pCode, &wCALL, sizeof(WORD))))
+			{
+				instruction_length = insn_len(pCode);
+				pCode += instruction_length;
+				i += instruction_length;
+				continue;
+			}
+
+			//check illegal, *ptrFuncAddr > pImageBase  && *ptrFuncAddr <= pImageBase + dwImageSize
+			ptrFuncAddr = (DWORD *)(pCode + sizeof(WORD));
+
+			if ((IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
+				|| *ptrFuncAddr < (DWORD)pImageBase || *ptrFuncAddr >= (DWORD)pImageBase + dwImageSize)
+			{
+				instruction_length = insn_len(pCode);
+				pCode += instruction_length;
+				i += instruction_length;
+				continue;
+			}
+
+			//Exit Bad Area
+			if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
+				break;
+
+			//need to fix relocation
+			if (!IsBadWritePtr((LPVOID)ptrFuncAddr, sizeof(DWORD))) {
+				if (*(DWORD *)ptrFuncAddr != (DWORD)lpAddr + *(DWORD *)ptrFuncAddr - (DWORD)pImageBase)
+					*(DWORD *)ptrFuncAddr = (DWORD)lpAddr + *(DWORD *)ptrFuncAddr - (DWORD)pImageBase;
+			}
+			
+			//now found one item that may belongs to IAT
+			ptrFuncAddr = (DWORD *)*ptrFuncAddr;
+
+			if ((DWORD)ptrFuncAddr > ptrFuncAddrHighest) {
+				ptrFuncAddrHighest = (DWORD)ptrFuncAddr;
+				//myprintf("highest = %X\n", ptrFuncAddrHighest);
+			}
+
+			//recheck illegal, 
+			//for system dlls, what about user dlls? well, whatever, there must be system dlls
+			//what if we found IAT for system dlls, so we found the user dlls.
+			//What if the IAT tables are not continous????????
+			if ((IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD))) || *ptrFuncAddr < dwMaxIATImageSize)
+			{
+				instruction_length = insn_len(pCode);
+				pCode += instruction_length;
+				i += instruction_length;
+				continue;
+			}
+			break;
+		}
+		//now it seems ptrFuncAddr points some item in IAT, 
+		//make ptrFuncAddr point to the beginning of the page
+		//we use 0xFFFEFFFF, because ptrFuncAddr is the memory addr we allocated, not by loadlibrary
+		*ptrIATEnd = (DWORD)ptrFuncAddrHighest;
+		ptrFuncAddr = (DWORD*)(((DWORD)ptrFuncAddr & 0xFFFFF000) + ((DWORD)lpAddr & 0x0FFF));
+	}
+	__except (1) {
+		return pImageSectionStart;
 	}
 
-	if (!pImageSectionStart)
-		pImageSectionStart = dwImageSize;
-
-	//printf("Found OEP at %X, ImageBase = %X\nImageSize = %X ImageSectionStart = %X\n", dwOEP, pImageBase, dwImageSize, pImageSectionStart);
-
-	//search for FF 25 XXXX, FF 15 YYYY from OEP, had better use Disasm engine 
-	//but we just do it simply
-	while (i < pImageSectionStart)
-	{
-		if (memcmp(pCode, &wJMP, sizeof(WORD))
-			&& memcmp(pCode, &wCALL, sizeof(WORD)))
-		{
-			//
-			instruction_length = insn_len(pCode);
-			pCode += instruction_length;
-			i += instruction_length;
-			continue;
-		}
-
-		//check illegal, *ptrFuncAddr > pImageBase  && *ptrFuncAddr <= pImageBase + dwImageSize
-		ptrFuncAddr = (DWORD *)(pCode + sizeof(WORD));
-
-		//Exit bad area.
-		if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
-			break;
-
-		if ((IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
-			|| *ptrFuncAddr < (DWORD)pImageBase || *ptrFuncAddr >= (DWORD)pImageBase + dwImageSize)
-		{
-			instruction_length = insn_len(pCode);
-			pCode += instruction_length;
-			i += instruction_length;
-			continue;
-		}
-
-		if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
-			break;
-		
-		//need to fix relocation
-		*(DWORD *)ptrFuncAddr = (long)lpAddr + *(long *)ptrFuncAddr - (long)pImageBase;
-		//now found one item that may belongs to IAT
-		ptrFuncAddr = (DWORD *)*ptrFuncAddr;
-
-		if (IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD)))
-			break;
-		
-		if ((DWORD)ptrFuncAddr > ptrFuncAddrHighest) {
-			ptrFuncAddrHighest = (DWORD)ptrFuncAddr;
-			//printf("highest = %X\n", ptrFuncAddrHighest);
-		}
-
-		//recheck illegal, 
-		//for system dlls, what about user dlls? well, whatever, there must be system dlls
-		//what if we found IAT for system dlls, so we found the user dlls.
-		//What if the IAT tables are not continous????????
-		if ((IsBadReadPtr((const void *)ptrFuncAddr, sizeof(DWORD)) || IsBadReadPtr((const void *)*(DWORD *)ptrFuncAddr, sizeof(DWORD))) || *ptrFuncAddr < dwMaxIATImageSize)
-		{
-			instruction_length = insn_len(pCode);
-			pCode += instruction_length;
-			i += instruction_length;
-			continue;
-		}
-		break;
-	}
-
-	//now it seems ptrFuncAddr points some item in IAT, 
-	//make ptrFuncAddr point to the beginning of the page
-	//we use 0xFFFEFFFF, because ptrFuncAddr is the memory addr we allocated, not by loadlibrary
-	*ptrIATEnd = (DWORD)ptrFuncAddrHighest;
-	ptrFuncAddr = (DWORD*)(((DWORD)ptrFuncAddr & 0xFFFFF000) + ((DWORD)lpAddr & 0x0FFF));
 
 	//quick fix.
 	if ((DWORD)ptrFuncAddr > pImageSectionStart)
